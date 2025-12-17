@@ -1,4 +1,4 @@
-This is a an alpha plugin lightly tested on windows 11 25h2 in fl studio. It still has some debuging features present.
+This is a an alpha plugin lightly tested on windows 11 25h2 in fl studio. It still has some debuging features present.   Do let me know if this is not working :) 
 
 # DCOffsetremover
 This aims to be a dc offset removal tool very basic
