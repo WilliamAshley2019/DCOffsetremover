@@ -100,4 +100,4 @@ Use these to objectively verify the filter is working without relying solely on 
 - Old version: Added 10Hz mode and full visualizer with the original 20hz mode operating with 2nd order filter.
 - **v1.0**: Initial 20Hz filter release
 
-This plugin delivers transparent, reliable DC/subsonic removal trusted in professional environments – all while remaining extremely lightweight and visually informative.
+This plugin delivers DC/subsonic removal 
