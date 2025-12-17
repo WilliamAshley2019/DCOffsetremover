@@ -41,10 +41,18 @@ public:
     // Visualizer support - helper methods for GUI thread
     void setVisualizerState(bool active) { visualizerActive.store(active, std::memory_order_relaxed); }
     float getNextSampleForVisualizer(int index) const { return visualizerFifo[index % fifoSize]; }
-    float getDCOffset() const { return dcOffset.load(std::memory_order_relaxed); }
-    float getRMSLevel() const { return rmsLevel.load(std::memory_order_relaxed); }
-    float getPeakLevel() const { return peakLevel.load(std::memory_order_relaxed); }
-    float getLowFreqLevel() const { return lowFreqLevel.load(std::memory_order_relaxed); }
+
+    // Pre-filter metrics (input signal)
+    float getDCOffsetPre() const { return dcOffsetPre.load(std::memory_order_relaxed); }
+    float getRMSPre() const { return rmsPre.load(std::memory_order_relaxed); }
+    float getPeakPre() const { return peakPre.load(std::memory_order_relaxed); }
+    float getLowFreqPre() const { return lowFreqPre.load(std::memory_order_relaxed); }
+
+    // Post-filter metrics (output signal - what you actually hear)
+    float getDCOffsetPost() const { return dcOffsetPost.load(std::memory_order_relaxed); }
+    float getRMSPost() const { return rmsPost.load(std::memory_order_relaxed); }
+    float getPeakPost() const { return peakPost.load(std::memory_order_relaxed); }
+    float getLowFreqPost() const { return lowFreqPost.load(std::memory_order_relaxed); }
 
     // Public so visualizer can access the size and write index
     static constexpr int fifoSize = 1024;
@@ -76,21 +84,32 @@ private:
     std::atomic<bool> visualizerActive{ false };
     float visualizerFifo[fifoSize];
 
-    // Audio metrics - low overhead calculation
-    std::atomic<float> dcOffset{ 0.0f };
-    std::atomic<float> rmsLevel{ 0.0f };
-    std::atomic<float> peakLevel{ 0.0f };
-    std::atomic<float> lowFreqLevel{ 0.0f }; // Energy below filter cutoff
+    // PRE-filter audio metrics (input signal)
+    std::atomic<float> dcOffsetPre{ 0.0f };
+    std::atomic<float> rmsPre{ 0.0f };
+    std::atomic<float> peakPre{ 0.0f };
+    std::atomic<float> lowFreqPre{ 0.0f };
+
+    // POST-filter audio metrics (output signal - what you actually hear)
+    std::atomic<float> dcOffsetPost{ 0.0f };
+    std::atomic<float> rmsPost{ 0.0f };
+    std::atomic<float> peakPost{ 0.0f };
+    std::atomic<float> lowFreqPost{ 0.0f };
 
     // RMS calculation
-    float rmsSum{ 0.0f };
-    float lowFreqSum{ 0.0f };
+    float rmsSumPre{ 0.0f };
+    float rmsSumPost{ 0.0f };
+    float lowFreqSumPre{ 0.0f };
+    float lowFreqSumPost{ 0.0f };
     int rmsSampleCount{ 0 };
     const int rmsUpdateInterval = 256; // Update RMS every N samples
 
     void updateFilterCoefficients();
     void updateAnalysisFilterCoefficients();
-    void updateAudioMetrics(const juce::AudioBuffer<float>& buffer);
+
+    // Separate functions for pre and post analysis
+    void updatePreFilterMetrics(const juce::AudioBuffer<float>& buffer);
+    void updatePostFilterMetrics(const juce::AudioBuffer<float>& buffer);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)
 };

@@ -108,13 +108,21 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     std::fill(std::begin(visualizerFifo), std::end(visualizerFifo), 0.0f);
     fifoWriteIndex.store(0, std::memory_order_relaxed);
 
-    // Reset metrics
-    dcOffset.store(0.0f, std::memory_order_relaxed);
-    rmsLevel.store(0.0f, std::memory_order_relaxed);
-    peakLevel.store(0.0f, std::memory_order_relaxed);
-    lowFreqLevel.store(0.0f, std::memory_order_relaxed);
-    rmsSum = 0.0f;
-    lowFreqSum = 0.0f;
+    // Reset all metrics
+    dcOffsetPre.store(0.0f, std::memory_order_relaxed);
+    rmsPre.store(0.0f, std::memory_order_relaxed);
+    peakPre.store(0.0f, std::memory_order_relaxed);
+    lowFreqPre.store(0.0f, std::memory_order_relaxed);
+
+    dcOffsetPost.store(0.0f, std::memory_order_relaxed);
+    rmsPost.store(0.0f, std::memory_order_relaxed);
+    peakPost.store(0.0f, std::memory_order_relaxed);
+    lowFreqPost.store(0.0f, std::memory_order_relaxed);
+
+    rmsSumPre = 0.0f;
+    rmsSumPost = 0.0f;
+    lowFreqSumPre = 0.0f;
+    lowFreqSumPost = 0.0f;
     rmsSampleCount = 0;
 }
 
@@ -157,7 +165,7 @@ void NewProjectAudioProcessor::updateAnalysisFilterCoefficients()
     *analysisFilterChain.get<0>().coefficients = *coefficients;
 }
 
-void NewProjectAudioProcessor::updateAudioMetrics(const juce::AudioBuffer<float>& buffer)
+void NewProjectAudioProcessor::updatePreFilterMetrics(const juce::AudioBuffer<float>& buffer)
 {
     int numSamples = buffer.getNumSamples();
 
@@ -167,55 +175,102 @@ void NewProjectAudioProcessor::updateAudioMetrics(const juce::AudioBuffer<float>
         float sum = 0.0f;
         float peak = 0.0f;
 
-        // Calculate DC offset and peak
+        // Calculate DC offset and peak for pre-filter
         for (int i = 0; i < numSamples; ++i)
         {
             float sample = channelData[i];
             sum += sample;
             peak = juce::jmax(peak, std::abs(sample));
+            rmsSumPre += sample * sample;
         }
 
-        dcOffset.store(sum / numSamples, std::memory_order_relaxed);
-        peakLevel.store(peak, std::memory_order_relaxed);
+        dcOffsetPre.store(sum / numSamples, std::memory_order_relaxed);
+        peakPre.store(peak, std::memory_order_relaxed);
 
-        // Calculate RMS - optimized with running sum
+        // Calculate low-frequency energy for pre-filter
+        // Create a temporary buffer for analysis
+        juce::AudioBuffer<float> tempBuffer(1, numSamples);
+        tempBuffer.copyFrom(0, 0, channelData, numSamples);
+
+        // Apply low-pass filter to isolate frequencies below cutoff
+        juce::dsp::AudioBlock<float> block(tempBuffer);
+        juce::dsp::ProcessContextReplacing<float> context(block);
+        analysisFilterChain.process(context);
+
+        // Calculate RMS of low-frequency content
+        float lowFreqRMS = 0.0f;
+        auto* lowFreqData = tempBuffer.getReadPointer(0);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            lowFreqRMS += lowFreqData[i] * lowFreqData[i];
+            lowFreqSumPre += lowFreqData[i] * lowFreqData[i];
+        }
+
+        rmsSampleCount += numSamples;
+
+        // Update RMS and low frequency every rmsUpdateInterval samples
+        if (rmsSampleCount >= rmsUpdateInterval)
+        {
+            rmsPre.store(std::sqrt(rmsSumPre / rmsSampleCount), std::memory_order_relaxed);
+            lowFreqPre.store(std::sqrt(lowFreqSumPre / rmsSampleCount), std::memory_order_relaxed);
+            rmsSumPre = 0.0f;
+            lowFreqSumPre = 0.0f;
+            rmsSampleCount = 0;
+        }
+    }
+}
+
+void NewProjectAudioProcessor::updatePostFilterMetrics(const juce::AudioBuffer<float>& buffer)
+{
+    int numSamples = buffer.getNumSamples();
+
+    if (buffer.getNumChannels() > 0)
+    {
+        auto* channelData = buffer.getReadPointer(0);
+        float sum = 0.0f;
+        float peak = 0.0f;
+
+        // Calculate DC offset and peak for post-filter
         for (int i = 0; i < numSamples; ++i)
         {
             float sample = channelData[i];
-            rmsSum += sample * sample;
-            rmsSampleCount++;
+            sum += sample;
+            peak = juce::jmax(peak, std::abs(sample));
+            rmsSumPost += sample * sample;
         }
 
-        // Update RMS every rmsUpdateInterval samples to reduce CPU
+        dcOffsetPost.store(sum / numSamples, std::memory_order_relaxed);
+        peakPost.store(peak, std::memory_order_relaxed);
+
+        // The low-frequency content should be much lower after filtering
+        // But we still calculate it to show the difference
+        juce::AudioBuffer<float> tempBuffer(1, numSamples);
+        tempBuffer.copyFrom(0, 0, channelData, numSamples);
+
+        // Reset analysis filter state to get accurate post-filter analysis
+        analysisFilterChain.reset();
+
+        // Apply low-pass filter
+        juce::dsp::AudioBlock<float> block(tempBuffer);
+        juce::dsp::ProcessContextReplacing<float> context(block);
+        analysisFilterChain.process(context);
+
+        // Calculate RMS of remaining low-frequency content
+        float lowFreqRMS = 0.0f;
+        auto* lowFreqData = tempBuffer.getReadPointer(0);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            lowFreqRMS += lowFreqData[i] * lowFreqData[i];
+            lowFreqSumPost += lowFreqData[i] * lowFreqData[i];
+        }
+
+        // We use the same rmsSampleCount as pre-filter
         if (rmsSampleCount >= rmsUpdateInterval)
         {
-            rmsLevel.store(std::sqrt(rmsSum / rmsSampleCount), std::memory_order_relaxed);
-            rmsSum = 0.0f;
-            rmsSampleCount = 0;
-        }
-
-        // Calculate low-frequency energy (what's being filtered out)
-        // Only do this if visualizer is active to save CPU
-        if (visualizerActive.load(std::memory_order_relaxed))
-        {
-            // Create a temporary buffer for analysis
-            juce::AudioBuffer<float> tempBuffer(1, numSamples);
-            tempBuffer.copyFrom(0, 0, channelData, numSamples);
-
-            // Apply low-pass filter to isolate frequencies below cutoff
-            juce::dsp::AudioBlock<float> block(tempBuffer);
-            juce::dsp::ProcessContextReplacing<float> context(block);
-            analysisFilterChain.process(context);
-
-            // Calculate RMS of low-frequency content
-            float lowFreqRMS = 0.0f;
-            auto* lowFreqData = tempBuffer.getReadPointer(0);
-            for (int i = 0; i < numSamples; ++i)
-            {
-                lowFreqRMS += lowFreqData[i] * lowFreqData[i];
-            }
-            lowFreqRMS = std::sqrt(lowFreqRMS / numSamples);
-            lowFreqLevel.store(lowFreqRMS, std::memory_order_relaxed);
+            rmsPost.store(std::sqrt(rmsSumPost / rmsSampleCount), std::memory_order_relaxed);
+            lowFreqPost.store(std::sqrt(lowFreqSumPost / rmsSampleCount), std::memory_order_relaxed);
+            rmsSumPost = 0.0f;
+            lowFreqSumPost = 0.0f;
         }
     }
 }
@@ -232,14 +287,14 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    // Update audio metrics for display (low overhead)
-    updateAudioMetrics(buffer);
+    // 1. Get PRE-filter metrics (input signal)
+    updatePreFilterMetrics(buffer);
 
-    // Check filter state
+    // 2. Check filter state
     bool filterActive = *apvts.getRawParameterValue("filterActive") > 0.5f;
     bool wasActive = wasFilterActive.exchange(filterActive, std::memory_order_relaxed);
 
-    // Check cutoff frequency
+    // 3. Check cutoff frequency
     bool lowCutoff = *apvts.getRawParameterValue("lowCutoff") > 0.5f;
     float targetCutoff = lowCutoff ? CUTOFF_10HZ : CUTOFF_20HZ;
 
@@ -250,20 +305,15 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         updateAnalysisFilterCoefficients();
     }
 
-    // Reset filter state ONLY when transitioning from active to inactive
+    // 4. Reset filter state ONLY when transitioning from active to inactive
     if (wasActive && !filterActive)
     {
         filterChain.reset();
         analysisFilterChain.reset();
     }
 
-    if (!filterActive)
-    {
-        // Filter is OFF - pass through
-        if (!visualizerActive.load(std::memory_order_relaxed))
-            return;
-    }
-    else
+    // 5. Apply filter if active
+    if (filterActive)
     {
         // Filter is ACTIVE - process the audio
         juce::dsp::AudioBlock<float> block(buffer);
@@ -271,13 +321,16 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         filterChain.process(context);
     }
 
-    // VISUALIZER LOGIC: Only runs if explicitly enabled
+    // 6. Get POST-filter metrics (output signal - what you actually hear)
+    updatePostFilterMetrics(buffer);
+
+    // 7. VISUALIZER LOGIC: Only runs if explicitly enabled
     if (visualizerActive.load(std::memory_order_relaxed))
     {
         auto* channelData = buffer.getReadPointer(0);
         int numSamples = buffer.getNumSamples();
 
-        // Push samples to lock-free FIFO
+        // Push samples to lock-free FIFO (POST-filter samples)
         for (int i = 0; i < numSamples; ++i)
         {
             int writePos = fifoWriteIndex.fetch_add(1, std::memory_order_relaxed) % fifoSize;

@@ -49,7 +49,7 @@ private:
     juce::ToggleButton filterActiveButton{ "DC Filter Active" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> filterActiveAttachment;
 
-    juce::ToggleButton cutoffToggleButton{ "10Hz Cutoff (Gentle)" };
+    juce::ToggleButton cutoffToggleButton{ "10Hz Mode (Gentle)" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> cutoffAttachment;
 
     juce::ToggleButton visualizerToggleButton{ "Show Visualizer" };
@@ -57,11 +57,21 @@ private:
 
     VisualizerComponent visualizer;
 
-    // Info labels
-    juce::Label dcOffsetLabel;
-    juce::Label rmsLabel;
-    juce::Label peakLabel;
-    juce::Label lowFreqLabel;
+    // Info labels - PRE filter (Input)
+    juce::Label preLabel;
+    juce::Label dcOffsetLabelPre;
+    juce::Label rmsLabelPre;
+    juce::Label peakLabelPre;
+    juce::Label lowFreqLabelPre;
+
+    // Info labels - POST filter (Output - what you hear)
+    juce::Label postLabel;
+    juce::Label dcOffsetLabelPost;
+    juce::Label rmsLabelPost;
+    juce::Label peakLabelPost;
+    juce::Label lowFreqLabelPost;
+
+    // Info label
     juce::Label infoLabel;
 
     NewProjectAudioProcessor& audioProcessor;

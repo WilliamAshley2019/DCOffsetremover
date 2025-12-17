@@ -99,11 +99,11 @@ void VisualizerComponent::paint(juce::Graphics& g)
     }
     g.drawImageAt(backgroundGrid, 0, 0);
 
-    // Get current audio metrics
-    float dcOffset = audioProcessor.getDCOffset();
-    float lowFreq = audioProcessor.getLowFreqLevel();
+    // Get POST-filter metrics (what you're actually hearing)
+    float dcOffsetPost = audioProcessor.getDCOffsetPost();
+    float lowFreqPost = audioProcessor.getLowFreqPost();
 
-    // Draw waveform
+    // Draw waveform (POST-filter)
     g.setColour(juce::Colours::cyan.withAlpha(0.9f));
     juce::Path waveformPath;
 
@@ -137,39 +137,32 @@ void VisualizerComponent::paint(juce::Graphics& g)
 
     g.strokePath(waveformPath, juce::PathStrokeType(1.5f));
 
-    // Draw DC offset line
-    if (std::abs(dcOffset) > 0.001f)
+    // Draw DC offset line (POST-filter)
+    if (std::abs(dcOffsetPost) > 0.001f)
     {
-        float dcY = yOffset - (dcOffset * yScale);
+        float dcY = yOffset - (dcOffsetPost * yScale);
         g.setColour(juce::Colours::red.withAlpha(0.7f));
         g.drawHorizontalLine(juce::roundToInt(dcY), 0.0f, (float)getWidth());
-
-        // Draw DC offset value
-        g.setColour(juce::Colours::white);
-        g.setFont(12.0f);
-        juce::String dcText = "DC: " + juce::String(dcOffset * 100.0f, 2) + "%";
-        g.drawText(dcText, 10, 10, 100, 20, juce::Justification::left);
     }
 
-    // Draw low-frequency energy meter (what's being filtered out)
-    if (lowFreq > 0.001f)
+    // Draw low-frequency energy meter (POST-filter - what's left after filtering)
+    if (lowFreqPost > 0.001f)
     {
         g.setColour(juce::Colours::orange.withAlpha(0.5f));
-        float lowFreqHeight = lowFreq * getHeight() / 2.0f;
+        float lowFreqHeight = lowFreqPost * getHeight() / 2.0f;
         g.fillRect(0.0f, yOffset - lowFreqHeight, 8.0f, lowFreqHeight * 2.0f);
-
-        // Draw low-frequency value
-        g.setColour(juce::Colours::white);
-        g.setFont(12.0f);
-        juce::String lowFreqText = "LF: " + juce::String(lowFreq * 100.0f, 2) + "%";
-        g.drawText(lowFreqText, getWidth() - 110, 50, 100, 20, juce::Justification::right);
     }
 
     // Draw cutoff frequency indicator
     g.setColour(juce::Colours::yellow.withAlpha(0.5f));
     juce::String cutoffText = (audioProcessor.apvts.getRawParameterValue("lowCutoff")->load() > 0.5f) ? "10Hz" : "20Hz";
     g.setFont(14.0f);
-    g.drawText("Cutoff: " + cutoffText, getWidth() / 2 - 50, getHeight() - 30, 100, 20, juce::Justification::centred);
+    g.drawText("Filter: " + cutoffText, getWidth() / 2 - 50, getHeight() - 30, 100, 20, juce::Justification::centred);
+
+    // Indicate this is POST-filter view
+    g.setColour(juce::Colours::lightgrey);
+    g.setFont(12.0f);
+    g.drawText("Output Signal", 10, getHeight() - 20, 100, 20, juce::Justification::left);
 }
 
 void VisualizerComponent::resized()
@@ -190,7 +183,7 @@ void VisualizerComponent::timerCallback()
 NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioProcessor& p)
     : AudioProcessorEditor(&p), audioProcessor(p), visualizer(p)
 {
-    setSize(600, 400);
+    setSize(600, 450); // Slightly taller for two rows of metrics
 
     // --- Filter Active Button ---
     addAndMakeVisible(filterActiveButton);
@@ -217,28 +210,61 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
     // --- Visualizer Component ---
     addAndMakeVisible(visualizer);
 
-    // --- Info Labels ---
-    addAndMakeVisible(dcOffsetLabel);
-    dcOffsetLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    dcOffsetLabel.setJustificationType(juce::Justification::centredLeft);
-    dcOffsetLabel.setFont(14.0f);
+    // --- PRE-filter labels (Input) ---
+    addAndMakeVisible(preLabel);
+    preLabel.setColour(juce::Label::textColourId, juce::Colours::lightblue);
+    preLabel.setJustificationType(juce::Justification::centredLeft);
+    preLabel.setFont(14.0f);
+    preLabel.setText("Input (Pre-filter):", juce::dontSendNotification);
 
-    addAndMakeVisible(rmsLabel);
-    rmsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    rmsLabel.setJustificationType(juce::Justification::centredLeft);
-    rmsLabel.setFont(14.0f);
+    addAndMakeVisible(dcOffsetLabelPre);
+    dcOffsetLabelPre.setColour(juce::Label::textColourId, juce::Colours::white);
+    dcOffsetLabelPre.setJustificationType(juce::Justification::centredLeft);
+    dcOffsetLabelPre.setFont(12.0f);
 
-    addAndMakeVisible(peakLabel);
-    peakLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    peakLabel.setJustificationType(juce::Justification::centredLeft);
-    peakLabel.setFont(14.0f);
+    addAndMakeVisible(rmsLabelPre);
+    rmsLabelPre.setColour(juce::Label::textColourId, juce::Colours::white);
+    rmsLabelPre.setJustificationType(juce::Justification::centredLeft);
+    rmsLabelPre.setFont(12.0f);
 
-    addAndMakeVisible(lowFreqLabel);
-    lowFreqLabel.setColour(juce::Label::textColourId, juce::Colours::orange);
-    lowFreqLabel.setJustificationType(juce::Justification::centredLeft);
-    lowFreqLabel.setFont(14.0f);
-    lowFreqLabel.setText("LF Energy: --%", juce::dontSendNotification);
+    addAndMakeVisible(peakLabelPre);
+    peakLabelPre.setColour(juce::Label::textColourId, juce::Colours::white);
+    peakLabelPre.setJustificationType(juce::Justification::centredLeft);
+    peakLabelPre.setFont(12.0f);
 
+    addAndMakeVisible(lowFreqLabelPre);
+    lowFreqLabelPre.setColour(juce::Label::textColourId, juce::Colours::lightblue);
+    lowFreqLabelPre.setJustificationType(juce::Justification::centredLeft);
+    lowFreqLabelPre.setFont(12.0f);
+
+    // --- POST-filter labels (Output - what you hear) ---
+    addAndMakeVisible(postLabel);
+    postLabel.setColour(juce::Label::textColourId, juce::Colours::lightgreen);
+    postLabel.setJustificationType(juce::Justification::centredLeft);
+    postLabel.setFont(14.0f);
+    postLabel.setText("Output (Post-filter):", juce::dontSendNotification);
+
+    addAndMakeVisible(dcOffsetLabelPost);
+    dcOffsetLabelPost.setColour(juce::Label::textColourId, juce::Colours::white);
+    dcOffsetLabelPost.setJustificationType(juce::Justification::centredLeft);
+    dcOffsetLabelPost.setFont(12.0f);
+
+    addAndMakeVisible(rmsLabelPost);
+    rmsLabelPost.setColour(juce::Label::textColourId, juce::Colours::white);
+    rmsLabelPost.setJustificationType(juce::Justification::centredLeft);
+    rmsLabelPost.setFont(12.0f);
+
+    addAndMakeVisible(peakLabelPost);
+    peakLabelPost.setColour(juce::Label::textColourId, juce::Colours::white);
+    peakLabelPost.setJustificationType(juce::Justification::centredLeft);
+    peakLabelPost.setFont(12.0f);
+
+    addAndMakeVisible(lowFreqLabelPost);
+    lowFreqLabelPost.setColour(juce::Label::textColourId, juce::Colours::lightgreen);
+    lowFreqLabelPost.setJustificationType(juce::Justification::centredLeft);
+    lowFreqLabelPost.setFont(12.0f);
+
+    // --- Info label ---
     addAndMakeVisible(infoLabel);
     infoLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
     infoLabel.setJustificationType(juce::Justification::centred);
@@ -258,20 +284,37 @@ NewProjectAudioProcessorEditor::~NewProjectAudioProcessorEditor()
 
 void NewProjectAudioProcessorEditor::updateMetricsDisplay()
 {
-    float dcOffset = audioProcessor.getDCOffset();
-    float rms = audioProcessor.getRMSLevel();
-    float peak = audioProcessor.getPeakLevel();
-    float lowFreq = audioProcessor.getLowFreqLevel();
+    // PRE-filter values (input)
+    float dcOffsetPre = audioProcessor.getDCOffsetPre();
+    float rmsPre = audioProcessor.getRMSPre();
+    float peakPre = audioProcessor.getPeakPre();
+    float lowFreqPre = audioProcessor.getLowFreqPre();
 
-    juce::String dcText = "DC: " + juce::String(dcOffset * 100.0f, 3) + "%";
-    juce::String rmsText = "RMS: " + juce::String(rms * 100.0f, 2) + "%";
-    juce::String peakText = "Peak: " + juce::String(peak * 100.0f, 2) + "%";
-    juce::String lowFreqText = "LF: " + juce::String(lowFreq * 100.0f, 2) + "%";
+    juce::String dcTextPre = "DC: " + juce::String(dcOffsetPre * 100.0f, 3) + "%";
+    juce::String rmsTextPre = "RMS: " + juce::String(rmsPre * 100.0f, 2) + "%";
+    juce::String peakTextPre = "Peak: " + juce::String(peakPre * 100.0f, 2) + "%";
+    juce::String lowFreqTextPre = "LF: " + juce::String(lowFreqPre * 100.0f, 2) + "%";
 
-    dcOffsetLabel.setText(dcText, juce::dontSendNotification);
-    rmsLabel.setText(rmsText, juce::dontSendNotification);
-    peakLabel.setText(peakText, juce::dontSendNotification);
-    lowFreqLabel.setText(lowFreqText, juce::dontSendNotification);
+    dcOffsetLabelPre.setText(dcTextPre, juce::dontSendNotification);
+    rmsLabelPre.setText(rmsTextPre, juce::dontSendNotification);
+    peakLabelPre.setText(peakTextPre, juce::dontSendNotification);
+    lowFreqLabelPre.setText(lowFreqTextPre, juce::dontSendNotification);
+
+    // POST-filter values (output - what you actually hear)
+    float dcOffsetPost = audioProcessor.getDCOffsetPost();
+    float rmsPost = audioProcessor.getRMSPost();
+    float peakPost = audioProcessor.getPeakPost();
+    float lowFreqPost = audioProcessor.getLowFreqPost();
+
+    juce::String dcTextPost = "DC: " + juce::String(dcOffsetPost * 100.0f, 3) + "%";
+    juce::String rmsTextPost = "RMS: " + juce::String(rmsPost * 100.0f, 2) + "%";
+    juce::String peakTextPost = "Peak: " + juce::String(peakPost * 100.0f, 2) + "%";
+    juce::String lowFreqTextPost = "LF: " + juce::String(lowFreqPost * 100.0f, 2) + "%";
+
+    dcOffsetLabelPost.setText(dcTextPost, juce::dontSendNotification);
+    rmsLabelPost.setText(rmsTextPost, juce::dontSendNotification);
+    peakLabelPost.setText(peakTextPost, juce::dontSendNotification);
+    lowFreqLabelPost.setText(lowFreqTextPost, juce::dontSendNotification);
 }
 
 void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
@@ -291,8 +334,16 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
     g.fillRect(footerArea);
     g.setColour(juce::Colours::lightgrey);
     g.setFont(12.0f);
-    juce::String versionText = "v1.0 | " + juce::String(JUCE_MAJOR_VERSION) + "." + juce::String(JUCE_MINOR_VERSION);
+    juce::String versionText = "v1.1 | Pre/Post Filter Analysis";
     g.drawText(versionText, footerArea, juce::Justification::centred);
+
+    // Draw separator line between pre and post sections
+    auto metricsArea = getLocalBounds().reduced(10);
+    metricsArea.removeFromTop(40); // Header
+    metricsArea.removeFromTop(50); // Controls
+    metricsArea.removeFromTop(50); // Pre-filter metrics
+    g.setColour(juce::Colours::grey.withAlpha(0.5f));
+    g.drawHorizontalLine(metricsArea.getY(), 10.0f, (float)getWidth() - 10.0f);
 }
 
 void NewProjectAudioProcessorEditor::resized()
@@ -311,13 +362,22 @@ void NewProjectAudioProcessorEditor::resized()
     cutoffToggleButton.setBounds(controlArea.removeFromLeft(buttonWidth).reduced(5));
     visualizerToggleButton.setBounds(controlArea.reduced(5));
 
-    // Metrics area
-    auto metricsArea = bounds.removeFromTop(25);
-    int metricWidth = metricsArea.getWidth() / 4;
-    dcOffsetLabel.setBounds(metricsArea.removeFromLeft(metricWidth).reduced(2));
-    rmsLabel.setBounds(metricsArea.removeFromLeft(metricWidth).reduced(2));
-    peakLabel.setBounds(metricsArea.removeFromLeft(metricWidth).reduced(2));
-    lowFreqLabel.setBounds(metricsArea.reduced(2));
+    // PRE-filter metrics area
+    auto preArea = bounds.removeFromTop(25);
+    preLabel.setBounds(preArea.removeFromLeft(120).reduced(2));
+    int metricWidth = (preArea.getWidth() - 120) / 4;
+    dcOffsetLabelPre.setBounds(preArea.removeFromLeft(metricWidth).reduced(2));
+    rmsLabelPre.setBounds(preArea.removeFromLeft(metricWidth).reduced(2));
+    peakLabelPre.setBounds(preArea.removeFromLeft(metricWidth).reduced(2));
+    lowFreqLabelPre.setBounds(preArea.reduced(2));
+
+    // POST-filter metrics area
+    auto postArea = bounds.removeFromTop(25);
+    postLabel.setBounds(postArea.removeFromLeft(120).reduced(2));
+    dcOffsetLabelPost.setBounds(postArea.removeFromLeft(metricWidth).reduced(2));
+    rmsLabelPost.setBounds(postArea.removeFromLeft(metricWidth).reduced(2));
+    peakLabelPost.setBounds(postArea.removeFromLeft(metricWidth).reduced(2));
+    lowFreqLabelPost.setBounds(postArea.reduced(2));
 
     // Visualizer area (remaining space)
     visualizer.setBounds(bounds.reduced(5));
