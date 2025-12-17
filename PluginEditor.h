@@ -46,11 +46,8 @@ public:
     void resized() override;
 
 private:
-    juce::ToggleButton filterActiveButton{ "DC Filter Active" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> filterActiveAttachment;
-
-    juce::ToggleButton cutoffToggleButton{ "10Hz Mode (Gentle)" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> cutoffAttachment;
+    juce::ComboBox filterModeComboBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filterModeAttachment;
 
     juce::ToggleButton visualizerToggleButton{ "Show Visualizer" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> visualizerAttachment;
@@ -70,6 +67,9 @@ private:
     juce::Label rmsLabelPost;
     juce::Label peakLabelPost;
     juce::Label lowFreqLabelPost;
+
+    // Filter info label
+    juce::Label filterInfoLabel;
 
     // Info label
     juce::Label infoLabel;

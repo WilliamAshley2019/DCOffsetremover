@@ -58,7 +58,9 @@ bool NewProjectAudioProcessor::isMidiEffect() const
 
 double NewProjectAudioProcessor::getTailLengthSeconds() const
 {
-    return 0.0;
+    // 1st-order filter has infinite impulse response technically, but very short tail
+    // 2nd-order filters have ~50-100ms tail depending on cutoff
+    return 0.1; // Conservative estimate
 }
 
 int NewProjectAudioProcessor::getNumPrograms()
@@ -97,12 +99,18 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
     spec.maximumBlockSize = static_cast<juce::uint32>(samplesPerBlock);
     spec.numChannels = static_cast<juce::uint32>(getTotalNumOutputChannels());
 
-    filterChain.prepare(spec);
+    filterChain2Pole.prepare(spec);
     analysisFilterChain.prepare(spec);
 
     // Set initial filter coefficients
     updateFilterCoefficients();
     updateAnalysisFilterCoefficients();
+    updateOnePoleCoefficients();
+
+    // Initialize 1st-order DC blocker state (per channel)
+    int numChannels = static_cast<int>(spec.numChannels);
+    dcXPrev.assign(numChannels, 0.0f);
+    dcYPrev.assign(numChannels, 0.0f);
 
     // Clear FIFO and reset write index
     std::fill(std::begin(visualizerFifo), std::end(visualizerFifo), 0.0f);
@@ -154,15 +162,41 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 
 void NewProjectAudioProcessor::updateFilterCoefficients()
 {
-    auto coefficients = FilterCoefs::makeHighPass(currentSampleRate, currentCutoffHz);
-    *filterChain.get<0>().coefficients = *coefficients;
+    // Update 2nd-order filter coefficients based on current mode
+    int mode = currentFilterMode.load(std::memory_order_relaxed);
+    float cutoff = (mode == MODE_2POLE_10HZ) ? CUTOFF_10HZ : CUTOFF_20HZ;
+
+    auto coefficients = FilterCoefs::makeHighPass(currentSampleRate, cutoff);
+    *filterChain2Pole.get<0>().coefficients = *coefficients;
 }
 
 void NewProjectAudioProcessor::updateAnalysisFilterCoefficients()
 {
-    // Create a low-pass filter at the same cutoff frequency to analyze what's being removed
-    auto coefficients = FilterCoefs::makeLowPass(currentSampleRate, currentCutoffHz);
+    // Create a low-pass filter at the appropriate cutoff
+    int mode = currentFilterMode.load(std::memory_order_relaxed);
+    float cutoff = CUTOFF_20HZ; // Default
+
+    if (mode == MODE_2POLE_10HZ) {
+        cutoff = CUTOFF_10HZ;
+    }
+    else if (mode == MODE_DC_1POLE) {
+        cutoff = CUTOFF_1POLE; // 1st-order filter targets ~5Hz
+    }
+    // MODE_BYPASS uses the default 20Hz for analysis
+
+    auto coefficients = FilterCoefs::makeLowPass(currentSampleRate, cutoff);
     *analysisFilterChain.get<0>().coefficients = *coefficients;
+}
+
+void NewProjectAudioProcessor::updateOnePoleCoefficients()
+{
+    // CORRECTED: Use exact discrete-time coefficient
+    // R = exp(-2π * fc / fs)
+    // For fc = 5Hz at 44.1kHz: R = exp(-2π * 5 / 44100) ≈ 0.999285
+    // For fc = 5Hz at 48kHz: R = exp(-2π * 5 / 48000) ≈ 0.999345
+
+    float omega = 2.0f * juce::MathConstants<float>::pi * CUTOFF_1POLE / currentSampleRate;
+    dcR = std::exp(-omega);
 }
 
 void NewProjectAudioProcessor::updatePreFilterMetrics(const juce::AudioBuffer<float>& buffer)
@@ -275,6 +309,42 @@ void NewProjectAudioProcessor::updatePostFilterMetrics(const juce::AudioBuffer<f
     }
 }
 
+void NewProjectAudioProcessor::processOnePoleDCBlocker(juce::AudioBuffer<float>& buffer)
+{
+    // CORRECTED: Canonical 1st-order DC blocker with persistent state
+    // y[n] = x[n] - x[n-1] + R * y[n-1]
+    // State persists forever across blocks
+
+    int numChannels = buffer.getNumChannels();
+    int numSamples = buffer.getNumSamples();
+
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        float* channelData = buffer.getWritePointer(ch);
+        float xPrev = dcXPrev[ch];
+        float yPrev = dcYPrev[ch];
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float x = channelData[i];
+
+            // CORRECT FORMULA: y[n] = x[n] - x[n-1] + R * y[n-1]
+            float y = x - xPrev + dcR * yPrev;
+
+            // Apply filter
+            channelData[i] = y;
+
+            // Update state for next sample
+            xPrev = x;
+            yPrev = y;
+        }
+
+        // Store state for next block
+        dcXPrev[ch] = xPrev;
+        dcYPrev[ch] = yPrev;
+    }
+}
+
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -290,56 +360,72 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     // 1. Get PRE-filter metrics (input signal)
     updatePreFilterMetrics(buffer);
 
-    // 2. Check filter state
-    bool filterActive = *apvts.getRawParameterValue("filterActive") > 0.5f;
-    bool wasActive = wasFilterActive.exchange(filterActive, std::memory_order_relaxed);
+    // 2. Get current filter mode from parameters - CORRECTED: Use parameter as-is
+    int newFilterMode = static_cast<int>(*apvts.getRawParameterValue("filterMode"));
+    int oldFilterMode = currentFilterMode.exchange(newFilterMode, std::memory_order_relaxed);
 
-    // 3. Check cutoff frequency
-    bool lowCutoff = *apvts.getRawParameterValue("lowCutoff") > 0.5f;
-    float targetCutoff = lowCutoff ? CUTOFF_10HZ : CUTOFF_20HZ;
-
-    if (targetCutoff != currentCutoffHz)
-    {
-        currentCutoffHz = targetCutoff;
-        updateFilterCoefficients();
-        updateAnalysisFilterCoefficients();
-    }
-
-    // 4. Reset filter state ONLY when transitioning from active to inactive
-    if (wasActive && !filterActive)
-    {
-        filterChain.reset();
-        // DON'T reset analysisFilterChain here - it's reset in updatePostFilterMetrics
-    }
-
-    // 5. Store a copy of the input buffer for visualizer when filter is OFF
+    // 3. Store a copy of the input buffer for visualizer when in bypass
     juce::AudioBuffer<float> inputBufferCopy;
     bool needVisualizer = visualizerActive.load(std::memory_order_relaxed);
 
-    if (needVisualizer && !filterActive)
+    if (needVisualizer && newFilterMode == MODE_BYPASS)
     {
-        // Make a copy of the input for visualizer (bypass mode)
         inputBufferCopy.makeCopyOf(buffer);
     }
 
-    // 6. Apply filter if active
-    if (filterActive)
+    // 4. Check if we need to update filter coefficients due to mode change
+    if (newFilterMode != oldFilterMode)
     {
-        // Filter is ACTIVE - process the audio
-        juce::dsp::AudioBlock<float> block(buffer);
-        juce::dsp::ProcessContextReplacing<float> context(block);
-        filterChain.process(context);
+        if (newFilterMode == MODE_DC_1POLE)
+        {
+            // Only need to update analysis filter coefficients for 1st-order mode
+            updateAnalysisFilterCoefficients();
+            // NOTE: Do NOT reset the 1st-order filter state!
+            // State persists forever for proper DC blocker operation
+        }
+        else if (newFilterMode == MODE_2POLE_10HZ || newFilterMode == MODE_2POLE_20HZ)
+        {
+            // Reset 2nd-order filter state and update coefficients
+            filterChain2Pole.reset();
+            updateFilterCoefficients();
+            updateAnalysisFilterCoefficients();
+        }
+        else if (newFilterMode == MODE_BYPASS)
+        {
+            // Bypass mode - update analysis filter to default 20Hz
+            updateAnalysisFilterCoefficients();
+        }
     }
 
-    // 7. Get POST-filter metrics (output signal - what you actually hear)
-    // This must ALWAYS be called to update the post-filter metrics
+    // 5. Apply appropriate filter based on mode
+    if (newFilterMode == MODE_BYPASS)
+    {
+        // TRUE BYPASS: Do absolutely nothing to the audio
+        // Audio passes through unchanged
+    }
+    else if (newFilterMode == MODE_DC_1POLE)
+    {
+        // 1st-order DC blocker with persistent state
+        processOnePoleDCBlocker(buffer);
+    }
+    else if (newFilterMode == MODE_2POLE_10HZ || newFilterMode == MODE_2POLE_20HZ)
+    {
+        // 2nd-order filter with selectable cutoff
+        juce::dsp::AudioBlock<float> block(buffer);
+        juce::dsp::ProcessContextReplacing<float> context(block);
+        filterChain2Pole.process(context);
+    }
+
+    // 6. Get POST-filter metrics (output signal - what you actually hear)
     updatePostFilterMetrics(buffer);
 
-    // 8. VISUALIZER LOGIC: Only runs if explicitly enabled
+    // 7. VISUALIZER LOGIC: Only runs if explicitly enabled
     if (needVisualizer)
     {
         // Determine which buffer to use for visualizer
-        auto* channelData = filterActive ? buffer.getReadPointer(0) : inputBufferCopy.getReadPointer(0);
+        auto* channelData = (newFilterMode == MODE_BYPASS) ?
+            inputBufferCopy.getReadPointer(0) :
+            buffer.getReadPointer(0);
         int numSamples = buffer.getNumSamples();
 
         // Push samples to lock-free FIFO
@@ -384,13 +470,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout NewProjectAudioProcessor::cr
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // RENAMED: "filterActive" instead of "bypass" to avoid confusion
-    // When true, the filter is ON. When false, filter is OFF (full bypass/sleep)
-    layout.add(std::make_unique<juce::AudioParameterBool>("filterActive", "Filter Active", true));
+    // CORRECTED: 4 modes with proper mapping
+    // 0 = Bypass, 1 = 1st-order DC blocker, 2 = 2nd-order 10Hz, 3 = 2nd-order 20Hz
+    juce::StringArray filterModes;
+    filterModes.add("Bypass");
+    filterModes.add("1st-order DC blocker (6dB/oct)");
+    filterModes.add("2nd-order 10Hz (12dB/oct)");
+    filterModes.add("2nd-order 20Hz (12dB/oct)");
 
-    // Cutoff frequency toggle (10Hz vs 20Hz)
-    // Default to 20Hz for compatibility with most audio systems
-    layout.add(std::make_unique<juce::AudioParameterBool>("lowCutoff", "10Hz Mode", false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>("filterMode", "Filter Mode",
+        filterModes, 3)); // Default to 20Hz
 
     // Visualizer state (GUI only, doesn't affect audio processing)
     layout.add(std::make_unique<juce::AudioParameterBool>("visualizer", "Visualizer", false));

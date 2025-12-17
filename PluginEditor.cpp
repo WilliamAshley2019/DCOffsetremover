@@ -156,23 +156,50 @@ void VisualizerComponent::paint(juce::Graphics& g)
         g.fillRect(0.0f, yOffset - lowFreqHeight, 8.0f, lowFreqHeight * 2.0f);
     }
 
-    // Draw cutoff frequency indicator
-    g.setColour(juce::Colours::yellow.withAlpha(0.5f));
-    juce::String cutoffText = (audioProcessor.apvts.getRawParameterValue("lowCutoff")->load() > 0.5f) ? "10Hz" : "20Hz";
+    // Draw filter mode indicator
+    int filterMode = audioProcessor.getFilterMode();
+    juce::String modeText;
+    juce::Colour modeColor;
+
+    switch (filterMode)
+    {
+    case 0: // Bypass
+        modeText = "BYPASS";
+        modeColor = juce::Colours::red;
+        break;
+    case 1: // 1st-order DC blocker
+        modeText = "1st-order DC blocker (~5Hz)";
+        modeColor = juce::Colours::yellow;
+        break;
+    case 2: // 2nd-order 10Hz
+        modeText = "2nd-order 10Hz HPF";
+        modeColor = juce::Colours::green;
+        break;
+    case 3: // 2nd-order 20Hz
+        modeText = "2nd-order 20Hz HPF";
+        modeColor = juce::Colours::cyan;
+        break;
+    default:
+        modeText = "Unknown";
+        modeColor = juce::Colours::grey;
+    }
+
+    g.setColour(modeColor);
     g.setFont(14.0f);
-    g.drawText("Filter: " + cutoffText, getWidth() / 2 - 50, getHeight() - 30, 100, 20, juce::Justification::centred);
+    g.drawText(modeText, getWidth() / 2 - 150, getHeight() - 30, 300, 20, juce::Justification::centred);
 
     // Indicate this is POST-filter view
     g.setColour(juce::Colours::lightgrey);
     g.setFont(12.0f);
     g.drawText("Output Signal", 10, getHeight() - 20, 100, 20, juce::Justification::left);
 
-    // Add filter state indicator
-    bool filterActive = audioProcessor.apvts.getRawParameterValue("filterActive")->load() > 0.5f;
-    juce::String filterState = filterActive ? "ACTIVE" : "BYPASS";
-    juce::Colour filterColor = filterActive ? juce::Colours::green : juce::Colours::red;
-    g.setColour(filterColor);
-    g.drawText("[" + filterState + "]", getWidth() - 80, getHeight() - 20, 70, 20, juce::Justification::right);
+    // Add 1st-order note if applicable
+    if (filterMode == 1)
+    {
+        g.setColour(juce::Colours::yellow.withAlpha(0.7f));
+        g.setFont(11.0f);
+        g.drawText("Stateful: y[n] = x[n] - x[n-1] + R·y[n-1]", getWidth() - 200, 10, 190, 20, juce::Justification::right);
+    }
 }
 
 void VisualizerComponent::resized()
@@ -193,17 +220,18 @@ void VisualizerComponent::timerCallback()
 NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioProcessor& p)
     : AudioProcessorEditor(&p), audioProcessor(p), visualizer(p)
 {
-    setSize(600, 450); // Slightly taller for two rows of metrics
+    setSize(600, 450);
 
-    // --- Filter Active Button ---
-    addAndMakeVisible(filterActiveButton);
-    filterActiveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        audioProcessor.apvts, "filterActive", filterActiveButton);
+    // --- Filter Mode ComboBox ---
+    addAndMakeVisible(filterModeComboBox);
+    filterModeComboBox.addItem("Bypass (No Filter)", 1);
+    filterModeComboBox.addItem("1st-order DC blocker (6dB/oct, ~5Hz)", 2);
+    filterModeComboBox.addItem("2nd-order 10Hz HPF (Gentle, 12dB/oct)", 3);
+    filterModeComboBox.addItem("2nd-order 20Hz HPF (Standard, 12dB/oct)", 4);
+    filterModeComboBox.setSelectedId(4); // Default to 20Hz
 
-    // --- Cutoff Frequency Toggle Button ---
-    addAndMakeVisible(cutoffToggleButton);
-    cutoffAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        audioProcessor.apvts, "lowCutoff", cutoffToggleButton);
+    filterModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        audioProcessor.apvts, "filterMode", filterModeComboBox);
 
     // --- Visualizer Toggle Button ---
     addAndMakeVisible(visualizerToggleButton);
@@ -274,12 +302,19 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
     lowFreqLabelPost.setJustificationType(juce::Justification::centredLeft);
     lowFreqLabelPost.setFont(12.0f);
 
+    // --- Filter info label ---
+    addAndMakeVisible(filterInfoLabel);
+    filterInfoLabel.setColour(juce::Label::textColourId, juce::Colours::yellow);
+    filterInfoLabel.setJustificationType(juce::Justification::centred);
+    filterInfoLabel.setFont(13.0f);
+    filterInfoLabel.setText("DC Offset Remover - Professional", juce::dontSendNotification);
+
     // --- Info label ---
     addAndMakeVisible(infoLabel);
     infoLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
     infoLabel.setJustificationType(juce::Justification::centred);
     infoLabel.setFont(16.0f);
-    infoLabel.setText("DC Offset Remover", juce::dontSendNotification);
+    infoLabel.setText("Professional DC Filter", juce::dontSendNotification);
 
     // Start metrics timer
     metricsTimer.startTimerHz(10); // Update metrics 10 times per second
@@ -325,6 +360,30 @@ void NewProjectAudioProcessorEditor::updateMetricsDisplay()
     rmsLabelPost.setText(rmsTextPost, juce::dontSendNotification);
     peakLabelPost.setText(peakTextPost, juce::dontSendNotification);
     lowFreqLabelPost.setText(lowFreqTextPost, juce::dontSendNotification);
+
+    // Update filter info based on current mode
+    int filterMode = audioProcessor.getFilterMode();
+    juce::String filterInfo;
+
+    switch (filterMode)
+    {
+    case 0:
+        filterInfo = "BYPASS: True bypass - no processing";
+        break;
+    case 1:
+        filterInfo = "1st-order: Stateful DC blocker (y[n] = x[n] - x[n-1] + R·y[n-1])";
+        break;
+    case 2:
+        filterInfo = "2nd-order: Gentle subsonic filter (10Hz, 12dB/oct)";
+        break;
+    case 3:
+        filterInfo = "2nd-order: Standard DC filter (20Hz, 12dB/oct)";
+        break;
+    default:
+        filterInfo = "Unknown filter mode";
+    }
+
+    filterInfoLabel.setText(filterInfo, juce::dontSendNotification);
 }
 
 void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
@@ -344,13 +403,13 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
     g.fillRect(footerArea);
     g.setColour(juce::Colours::lightgrey);
     g.setFont(12.0f);
-    juce::String versionText = "v1.1 | Pre/Post Filter Analysis";
+    juce::String versionText = "v2.1 | Professional DC Filter";
     g.drawText(versionText, footerArea, juce::Justification::centred);
 
     // Draw separator line between pre and post sections
     auto metricsArea = getLocalBounds().reduced(10);
     metricsArea.removeFromTop(40); // Header
-    metricsArea.removeFromTop(50); // Controls
+    metricsArea.removeFromTop(60); // Controls
     metricsArea.removeFromTop(50); // Pre-filter metrics
     g.setColour(juce::Colours::grey.withAlpha(0.5f));
     g.drawHorizontalLine(metricsArea.getY(), 10.0f, (float)getWidth() - 10.0f);
@@ -364,13 +423,14 @@ void NewProjectAudioProcessorEditor::resized()
     auto headerArea = bounds.removeFromTop(40);
     infoLabel.setBounds(headerArea);
 
-    // Control area
-    auto controlArea = bounds.removeFromTop(50);
+    // Filter info area
+    auto filterInfoArea = bounds.removeFromTop(25);
+    filterInfoLabel.setBounds(filterInfoArea);
 
-    int buttonWidth = controlArea.getWidth() / 3;
-    filterActiveButton.setBounds(controlArea.removeFromLeft(buttonWidth).reduced(5));
-    cutoffToggleButton.setBounds(controlArea.removeFromLeft(buttonWidth).reduced(5));
-    visualizerToggleButton.setBounds(controlArea.reduced(5));
+    // Control area
+    auto controlArea = bounds.removeFromTop(35);
+    filterModeComboBox.setBounds(controlArea.removeFromLeft(controlArea.getWidth() * 0.7).reduced(2));
+    visualizerToggleButton.setBounds(controlArea.reduced(2));
 
     // PRE-filter metrics area
     auto preArea = bounds.removeFromTop(25);
