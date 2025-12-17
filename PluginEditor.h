@@ -1,9 +1,9 @@
 #pragma once
-#include <JuceHeader.h>
+
 #include "PluginProcessor.h"
 
 //==============================================================================
-// Dedicated visualizer component - encapsulates all visualization logic
+// Visualizer Component - shows waveform with DC offset reference
 //==============================================================================
 class VisualizerComponent : public juce::Component,
     public juce::Timer
@@ -29,7 +29,7 @@ private:
 };
 
 //==============================================================================
-// Main plugin editor
+// Main Plugin Editor
 //==============================================================================
 class NewProjectAudioProcessorEditor : public juce::AudioProcessorEditor
 {
@@ -41,8 +41,8 @@ public:
     void resized() override;
 
 private:
-    juce::ToggleButton bypassButton{ "DC Filter Active" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
+    juce::ToggleButton filterActiveButton{ "DC Filter Active" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> filterActiveAttachment;
 
     juce::ToggleButton visualizerToggleButton{ "Show Visualizer" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> visualizerAttachment;

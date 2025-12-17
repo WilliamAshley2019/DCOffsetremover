@@ -114,7 +114,7 @@ void VisualizerComponent::drawBackgroundGrid(juce::Graphics& g)
 }
 
 //==============================================================================
-// PluginEditor Implementation
+// NewProjectAudioProcessorEditor Implementation
 //==============================================================================
 
 NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioProcessor& p)
@@ -122,24 +122,24 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 {
     setSize(600, 300);
 
-    // Setup bypass button
-    addAndMakeVisible(bypassButton);
-    bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        audioProcessor.apvts, "bypass", bypassButton);
+    // --- Filter Active Button ---
+    addAndMakeVisible(filterActiveButton);
+    filterActiveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        audioProcessor.apvts, "filterActive", filterActiveButton);
 
-    // Setup visualizer toggle
+    // --- Visualizer Toggle Button ---
     addAndMakeVisible(visualizerToggleButton);
     visualizerAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, "visualizer", visualizerToggleButton);
 
-    visualizerToggleButton.onClick = [this]()
-        {
-            visualizer.setVisualizerActive(visualizerToggleButton.getToggleState());
+    visualizerToggleButton.onClick = [this]() {
+        visualizer.setVisualizerActive(visualizerToggleButton.getToggleState());
         };
 
     // Initialize visualizer state from saved parameter
     visualizer.setVisualizerActive(visualizerToggleButton.getToggleState());
 
+    // --- Visualizer Component ---
     addAndMakeVisible(visualizer);
 }
 
@@ -150,7 +150,6 @@ NewProjectAudioProcessorEditor::~NewProjectAudioProcessorEditor()
 void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colours::darkgrey);
-
     g.setColour(juce::Colours::white);
     g.setFont(18.0f);
     g.drawText("DC Offset Remover", getLocalBounds().removeFromTop(40), juce::Justification::centred);
@@ -161,10 +160,8 @@ void NewProjectAudioProcessorEditor::resized()
     auto bounds = getLocalBounds().reduced(10);
     auto topArea = bounds.removeFromTop(50);
 
-    // Layout control buttons
-    bypassButton.setBounds(topArea.removeFromLeft(bounds.getWidth() / 2).reduced(5));
+    filterActiveButton.setBounds(topArea.removeFromLeft(bounds.getWidth() / 2).reduced(5));
     visualizerToggleButton.setBounds(topArea.reduced(5));
 
-    // Visualizer takes remaining space
     visualizer.setBounds(bounds.reduced(5));
 }
