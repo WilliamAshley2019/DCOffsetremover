@@ -90,20 +90,32 @@ void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& 
 //==============================================================================
 void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    currentSampleRate = sampleRate;
+
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = sampleRate;
     spec.maximumBlockSize = static_cast<juce::uint32>(samplesPerBlock);
     spec.numChannels = static_cast<juce::uint32>(getTotalNumOutputChannels());
 
     filterChain.prepare(spec);
+    analysisFilterChain.prepare(spec);
 
-    // Set coefficients for 20Hz High Pass
-    auto coefficients = FilterCoefs::makeHighPass(sampleRate, 20.0f);
-    *filterChain.get<0>().coefficients = *coefficients;
+    // Set initial filter coefficients
+    updateFilterCoefficients();
+    updateAnalysisFilterCoefficients();
 
     // Clear FIFO and reset write index
     std::fill(std::begin(visualizerFifo), std::end(visualizerFifo), 0.0f);
     fifoWriteIndex.store(0, std::memory_order_relaxed);
+
+    // Reset metrics
+    dcOffset.store(0.0f, std::memory_order_relaxed);
+    rmsLevel.store(0.0f, std::memory_order_relaxed);
+    peakLevel.store(0.0f, std::memory_order_relaxed);
+    lowFreqLevel.store(0.0f, std::memory_order_relaxed);
+    rmsSum = 0.0f;
+    lowFreqSum = 0.0f;
+    rmsSampleCount = 0;
 }
 
 void NewProjectAudioProcessor::releaseResources()
@@ -132,6 +144,82 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 }
 #endif
 
+void NewProjectAudioProcessor::updateFilterCoefficients()
+{
+    auto coefficients = FilterCoefs::makeHighPass(currentSampleRate, currentCutoffHz);
+    *filterChain.get<0>().coefficients = *coefficients;
+}
+
+void NewProjectAudioProcessor::updateAnalysisFilterCoefficients()
+{
+    // Create a low-pass filter at the same cutoff frequency to analyze what's being removed
+    auto coefficients = FilterCoefs::makeLowPass(currentSampleRate, currentCutoffHz);
+    *analysisFilterChain.get<0>().coefficients = *coefficients;
+}
+
+void NewProjectAudioProcessor::updateAudioMetrics(const juce::AudioBuffer<float>& buffer)
+{
+    int numSamples = buffer.getNumSamples();
+
+    if (buffer.getNumChannels() > 0)
+    {
+        auto* channelData = buffer.getReadPointer(0);
+        float sum = 0.0f;
+        float peak = 0.0f;
+
+        // Calculate DC offset and peak
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float sample = channelData[i];
+            sum += sample;
+            peak = juce::jmax(peak, std::abs(sample));
+        }
+
+        dcOffset.store(sum / numSamples, std::memory_order_relaxed);
+        peakLevel.store(peak, std::memory_order_relaxed);
+
+        // Calculate RMS - optimized with running sum
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float sample = channelData[i];
+            rmsSum += sample * sample;
+            rmsSampleCount++;
+        }
+
+        // Update RMS every rmsUpdateInterval samples to reduce CPU
+        if (rmsSampleCount >= rmsUpdateInterval)
+        {
+            rmsLevel.store(std::sqrt(rmsSum / rmsSampleCount), std::memory_order_relaxed);
+            rmsSum = 0.0f;
+            rmsSampleCount = 0;
+        }
+
+        // Calculate low-frequency energy (what's being filtered out)
+        // Only do this if visualizer is active to save CPU
+        if (visualizerActive.load(std::memory_order_relaxed))
+        {
+            // Create a temporary buffer for analysis
+            juce::AudioBuffer<float> tempBuffer(1, numSamples);
+            tempBuffer.copyFrom(0, 0, channelData, numSamples);
+
+            // Apply low-pass filter to isolate frequencies below cutoff
+            juce::dsp::AudioBlock<float> block(tempBuffer);
+            juce::dsp::ProcessContextReplacing<float> context(block);
+            analysisFilterChain.process(context);
+
+            // Calculate RMS of low-frequency content
+            float lowFreqRMS = 0.0f;
+            auto* lowFreqData = tempBuffer.getReadPointer(0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                lowFreqRMS += lowFreqData[i] * lowFreqData[i];
+            }
+            lowFreqRMS = std::sqrt(lowFreqRMS / numSamples);
+            lowFreqLevel.store(lowFreqRMS, std::memory_order_relaxed);
+        }
+    }
+}
+
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -144,23 +232,36 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    // CRITICAL FIX: Check if filter is ACTIVE (not bypassed)
-    // The button says "DC Filter Active" so when checked (true), we should FILTER
+    // Update audio metrics for display (low overhead)
+    updateAudioMetrics(buffer);
+
+    // Check filter state
     bool filterActive = *apvts.getRawParameterValue("filterActive") > 0.5f;
+    bool wasActive = wasFilterActive.exchange(filterActive, std::memory_order_relaxed);
+
+    // Check cutoff frequency
+    bool lowCutoff = *apvts.getRawParameterValue("lowCutoff") > 0.5f;
+    float targetCutoff = lowCutoff ? CUTOFF_10HZ : CUTOFF_20HZ;
+
+    if (targetCutoff != currentCutoffHz)
+    {
+        currentCutoffHz = targetCutoff;
+        updateFilterCoefficients();
+        updateAnalysisFilterCoefficients();
+    }
+
+    // Reset filter state ONLY when transitioning from active to inactive
+    if (wasActive && !filterActive)
+    {
+        filterChain.reset();
+        analysisFilterChain.reset();
+    }
 
     if (!filterActive)
     {
-        // Filter is OFF - do absolutely nothing (full sleep mode)
-        // Audio passes through untouched, zero CPU cost
-        // Don't even reset the filter state to save CPU
-
-        // If visualizer is also off, this is the absolute minimum processing path
+        // Filter is OFF - pass through
         if (!visualizerActive.load(std::memory_order_relaxed))
-        {
-            // FULL SLEEP MODE: Both filter and visualizer disabled
-            // This should have the absolute lowest CPU usage
             return;
-        }
     }
     else
     {
@@ -171,7 +272,6 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     }
 
     // VISUALIZER LOGIC: Only runs if explicitly enabled
-    // This check is extremely cheap (single atomic load)
     if (visualizerActive.load(std::memory_order_relaxed))
     {
         auto* channelData = buffer.getReadPointer(0);
@@ -222,6 +322,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout NewProjectAudioProcessor::cr
     // RENAMED: "filterActive" instead of "bypass" to avoid confusion
     // When true, the filter is ON. When false, filter is OFF (full bypass/sleep)
     layout.add(std::make_unique<juce::AudioParameterBool>("filterActive", "Filter Active", true));
+
+    // Cutoff frequency toggle (10Hz vs 20Hz)
+    // Default to 20Hz for compatibility with most audio systems
+    layout.add(std::make_unique<juce::AudioParameterBool>("lowCutoff", "10Hz Mode", false));
 
     // Visualizer state (GUI only, doesn't affect audio processing)
     layout.add(std::make_unique<juce::AudioParameterBool>("visualizer", "Visualizer", false));
