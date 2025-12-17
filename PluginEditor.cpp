@@ -137,13 +137,16 @@ void VisualizerComponent::paint(juce::Graphics& g)
 
     g.strokePath(waveformPath, juce::PathStrokeType(1.5f));
 
-    // Draw DC offset line (POST-filter)
-    if (std::abs(dcOffsetPost) > 0.001f)
-    {
-        float dcY = yOffset - (dcOffsetPost * yScale);
-        g.setColour(juce::Colours::red.withAlpha(0.7f));
-        g.drawHorizontalLine(juce::roundToInt(dcY), 0.0f, (float)getWidth());
-    }
+    // Draw DC offset line (POST-filter - what's actually in the output)
+    float dcY = yOffset - (dcOffsetPost * yScale);
+    g.setColour(juce::Colours::red.withAlpha(0.7f));
+    g.drawHorizontalLine(juce::roundToInt(dcY), 0.0f, (float)getWidth());
+
+    // Draw DC offset value (POST-filter)
+    g.setColour(juce::Colours::white);
+    g.setFont(12.0f);
+    juce::String dcText = "DC Out: " + juce::String(dcOffsetPost * 100.0f, 3) + "%";
+    g.drawText(dcText, 10, 10, 100, 20, juce::Justification::left);
 
     // Draw low-frequency energy meter (POST-filter - what's left after filtering)
     if (lowFreqPost > 0.001f)
@@ -163,6 +166,13 @@ void VisualizerComponent::paint(juce::Graphics& g)
     g.setColour(juce::Colours::lightgrey);
     g.setFont(12.0f);
     g.drawText("Output Signal", 10, getHeight() - 20, 100, 20, juce::Justification::left);
+
+    // Add filter state indicator
+    bool filterActive = audioProcessor.apvts.getRawParameterValue("filterActive")->load() > 0.5f;
+    juce::String filterState = filterActive ? "ACTIVE" : "BYPASS";
+    juce::Colour filterColor = filterActive ? juce::Colours::green : juce::Colours::red;
+    g.setColour(filterColor);
+    g.drawText("[" + filterState + "]", getWidth() - 80, getHeight() - 20, 70, 20, juce::Justification::right);
 }
 
 void VisualizerComponent::resized()

@@ -243,11 +243,11 @@ void NewProjectAudioProcessor::updatePostFilterMetrics(const juce::AudioBuffer<f
         peakPost.store(peak, std::memory_order_relaxed);
 
         // The low-frequency content should be much lower after filtering
-        // But we still calculate it to show the difference
+        // Create a temporary buffer for analysis
         juce::AudioBuffer<float> tempBuffer(1, numSamples);
         tempBuffer.copyFrom(0, 0, channelData, numSamples);
 
-        // Reset analysis filter state to get accurate post-filter analysis
+        // Reset analysis filter for accurate post-filter measurement
         analysisFilterChain.reset();
 
         // Apply low-pass filter
@@ -309,10 +309,20 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     if (wasActive && !filterActive)
     {
         filterChain.reset();
-        analysisFilterChain.reset();
+        // DON'T reset analysisFilterChain here - it's reset in updatePostFilterMetrics
     }
 
-    // 5. Apply filter if active
+    // 5. Store a copy of the input buffer for visualizer when filter is OFF
+    juce::AudioBuffer<float> inputBufferCopy;
+    bool needVisualizer = visualizerActive.load(std::memory_order_relaxed);
+
+    if (needVisualizer && !filterActive)
+    {
+        // Make a copy of the input for visualizer (bypass mode)
+        inputBufferCopy.makeCopyOf(buffer);
+    }
+
+    // 6. Apply filter if active
     if (filterActive)
     {
         // Filter is ACTIVE - process the audio
@@ -321,16 +331,18 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         filterChain.process(context);
     }
 
-    // 6. Get POST-filter metrics (output signal - what you actually hear)
+    // 7. Get POST-filter metrics (output signal - what you actually hear)
+    // This must ALWAYS be called to update the post-filter metrics
     updatePostFilterMetrics(buffer);
 
-    // 7. VISUALIZER LOGIC: Only runs if explicitly enabled
-    if (visualizerActive.load(std::memory_order_relaxed))
+    // 8. VISUALIZER LOGIC: Only runs if explicitly enabled
+    if (needVisualizer)
     {
-        auto* channelData = buffer.getReadPointer(0);
+        // Determine which buffer to use for visualizer
+        auto* channelData = filterActive ? buffer.getReadPointer(0) : inputBufferCopy.getReadPointer(0);
         int numSamples = buffer.getNumSamples();
 
-        // Push samples to lock-free FIFO (POST-filter samples)
+        // Push samples to lock-free FIFO
         for (int i = 0; i < numSamples; ++i)
         {
             int writePos = fifoWriteIndex.fetch_add(1, std::memory_order_relaxed) % fifoSize;
