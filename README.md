@@ -1,4 +1,4 @@
-This is a an alpha plugin lightly tested on windows 11 25h2 in fl studio.
+This is a an alpha plugin lightly tested on windows 11 25h2 in fl studio. It still has some debuging features present.
 
 # DCOffsetremover
 This aims to be a dc offset removal tool very basic
@@ -6,7 +6,7 @@ This aims to be a dc offset removal tool very basic
 
  ## Overview
 
-This is a lightweight,  **DC Offset Remover** audio plugin built with the JUCE framework. It effectively removes unwanted DC offset and subsonic frequencies using selectable filter topologies, while providing detailed real-time metering and an optional waveform visualizer for precise signal analysis.
+This is a lightweight,  **DC Offset Remover** audio plugin built with the JUCE framework. It effectively removes unwanted DC offset and subsonic frequencies using selectable filter topologies, while providing detailed real-time metering and an optional waveform visualizer for signal analysis.
 
 The plugin processes mono or stereo audio with **zero latency**, minimal CPU usage, and true bypass capability. It is ideal for mixing, mastering, tracking, vinyl restoration, podcasting, and live sound applications where clean, centered audio signals are essential.
 
